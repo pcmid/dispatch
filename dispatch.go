@@ -7,8 +7,6 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/coredns/coredns/plugin"
-	"github.com/coredns/coredns/plugin/pkg/dnstest"
-	"github.com/coredns/coredns/plugin/pkg/replacer"
 	"github.com/coredns/coredns/request"
 
 	"github.com/pcmid/dispatch/proxy"
@@ -40,21 +38,17 @@ func (d *Dispatch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 
 				go func(p *proxy.Proxy) {
 					msg := r.Copy()
-					log.Debugf("%s: %d", p.Addr(), msg.MsgHdr.Id)
 					state := request.Request{
 						Req: msg,
 						W:   w,
 					}
 					resp, err := p.Connect(ctx, state, proxy.Options{})
-					log.Debugf("2%s: %d", p.Addr(), msg.MsgHdr.Id)
-
 					if err != nil {
 						log.Errorf("failed to query %s: %s", msg.Question[0].Name, err)
 						return
 					}
 					once.Do(func() {
-						log.Debugf("get first resp from %s: %s", p.Addr(), replacer.New().Replace(ctx, state, dnstest.NewRecorder(w), ""))
-
+						log.Debugf("get first resp from %s: %d, %s", p.Addr(), resp.MsgHdr.Id, resp.Question[0].Name)
 						respChan <- resp
 					})
 				}(p)

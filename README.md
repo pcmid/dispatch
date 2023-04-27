@@ -13,7 +13,7 @@ dispatch FROM... {
 }
 ```
 
-* `FROM...` is the file list which contains base domain to match for the request to be redirected. URL can also be used, currently only `HTTPS` is supported(due to security reasons).
+* `FROM...` is the file list which contains base domain to match for the request to be redirected. URL can also be used.
 
   `.`(i.e. root zone) can be used solely to match all incoming requests as a fallback.
 
