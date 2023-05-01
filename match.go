@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coredns/caddy"
@@ -15,10 +16,14 @@ import (
 )
 
 type Matcher struct {
-	dt          *DomainTree
+	froms       []string
+	dt          atomic.Pointer[DomainTree]
 	proxies     []*proxy.Proxy
 	maxfails    uint32
 	healthcheck time.Duration
+
+	reload time.Duration
+	stop   chan struct{}
 }
 
 func NewMatchers(c *caddy.Controller) ([]*Matcher, error) {
@@ -41,6 +46,7 @@ func NewMatchers(c *caddy.Controller) ([]*Matcher, error) {
 func newMatch(c *caddy.Controller) (*Matcher, error) {
 	m := &Matcher{
 		healthcheck: 10 * time.Second,
+		stop:        make(chan struct{}),
 	}
 
 	if err := m.parseFrom(c); err != nil {
@@ -57,18 +63,24 @@ func newMatch(c *caddy.Controller) (*Matcher, error) {
 }
 
 func (m *Matcher) parseFrom(c *caddy.Controller) (err error) {
-	forms := c.RemainingArgs()
-	n := len(forms)
+	m.froms = c.RemainingArgs()
+	n := len(m.froms)
 	if n == 0 {
 		return c.ArgErr()
 	}
 
-	if m.dt == nil {
-		m.dt = NewDomainTree()
-	}
-	for _, from := range forms {
+	m.rebuildDt()
+	return
+}
+
+func (m *Matcher) rebuildDt() {
+	global := NewDomainTree()
+	for _, from := range m.froms {
 		log.Infof("found from: %s", from)
-		var dt *DomainTree
+		var (
+			dt  *DomainTree
+			err error
+		)
 		if strings.HasPrefix(from, "http://") || strings.HasPrefix(from, "https://") {
 			dt, err = NewTreeFromUrl(from)
 			if err != nil {
@@ -83,10 +95,10 @@ func (m *Matcher) parseFrom(c *caddy.Controller) (err error) {
 			}
 		}
 
-		m.dt.Merge(dt)
+		global.Merge(dt)
 	}
 
-	return nil
+	m.dt.Store(global)
 }
 
 func (m *Matcher) parseBlock(c *caddy.Controller) error {
@@ -101,6 +113,10 @@ func (m *Matcher) parseBlock(c *caddy.Controller) error {
 		}
 	case "healthcheck":
 		if err := m.parseHealthcheck(c); err != nil {
+			return err
+		}
+	case "reload":
+		if err := m.parseReload(c); err != nil {
 			return err
 		}
 	default:
@@ -163,14 +179,63 @@ func (m *Matcher) parseHealthcheck(c *caddy.Controller) error {
 		return c.ArgErr()
 	}
 
-	seconds, err := strconv.Atoi(args[0])
+	duration, err := time.ParseDuration(args[0])
 	if err != nil {
 		return err
 	}
-	if seconds <= 0 {
-		return Error(fmt.Errorf("healthcheck must be great than 0: %s", c.ArgErr()))
+	if duration <= 0 {
+		return Error(fmt.Errorf("healthcheck interval must be great than 0: %s", c.ArgErr()))
 	}
 
-	m.healthcheck = time.Duration(seconds) * time.Second
+	m.healthcheck = duration
 	return nil
+}
+
+func (m *Matcher) parseReload(c *caddy.Controller) error {
+	args := c.RemainingArgs()
+	if len(args) != 1 {
+		return c.ArgErr()
+	}
+
+	duration, err := time.ParseDuration(args[0])
+	if err != nil {
+		return err
+	}
+	if duration <= 0 {
+		return Error(fmt.Errorf("reload interval must be great than 0: %s", c.ArgErr()))
+	}
+
+	m.reload = duration
+	return nil
+}
+
+func (m *Matcher) Start() {
+	for _, p := range m.proxies {
+		p.Start(m.healthcheck)
+		p.Healthcheck()
+	}
+
+	if m.reload > 0 {
+		go func() {
+			reload := time.NewTicker(m.reload)
+
+			for {
+				select {
+				case <-reload.C:
+					m.rebuildDt()
+				case <-m.stop:
+					log.Infof("match stop watch: %s", m.froms)
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (m *Matcher) Stop() {
+	for _, p := range m.proxies {
+		p.Stop()
+	}
+
+	close(m.stop)
 }

@@ -8,7 +8,7 @@ A coredns plugin for dispatch request to other upstream by matched domain.
 dispatch FROM... {
     to TO...
     
-    healthcheck DURATION [no_rec]
+    healthcheck DURATION
     maxfails INTEGER
 }
 ```
@@ -69,8 +69,9 @@ dispatch FROM... {
     dispatch https://expample.com/dnsmasq-dns.conf custom-domain.conf {
         to 1.1.1.1 tls://1.1.1.1@one.one.one.one
         
-        healthcheck 10
+        healthcheck 10s
         maxfails 5
+        reload 24h
     }
     dispatch home.conf {
         to 10.1.1.10:53
